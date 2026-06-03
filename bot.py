@@ -2,9 +2,9 @@ import os
 import re
 import asyncio
 import logging
+import time
 from datetime import datetime
-from google import genai
-from google.genai import types as genai_types
+from openai import OpenAI
 from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher, Router, F
@@ -22,7 +22,8 @@ load_dotenv()
 # Read Environment Variables
 TOKEN = os.getenv("TOKEN")
 LLM_API = os.getenv("LLM_API")
-LLM_MODEL = os.getenv("LLM_MODEL", "gemini-2.0-flash")
+LLM_MODEL = os.getenv("LLM_MODEL", "qwen-3-32b")
+LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.cerebras.ai/v1")
 ADMIN_IDS_STR = os.getenv("ADMIN_IDS", "")
 
 # Parse Admin IDs
@@ -37,7 +38,7 @@ if ADMIN_IDS_STR:
 ai_client = None
 if LLM_API:
     try:
-        ai_client = genai.Client(api_key=LLM_API)
+        ai_client = OpenAI(api_key=LLM_API, base_url=LLM_BASE_URL)
         logger.info(f"AI client initialized. Model: {LLM_MODEL}")
     except Exception as e:
         logger.error(f"Failed to initialize AI client: {e}")
@@ -315,34 +316,42 @@ def call_ai(system_prompt: str, messages: list[dict]) -> str:
     """
     Send a chat request to the configured AI model and return the reply text.
     `messages` is a list of {"role": "user"|"assistant", "content": "..."} dicts.
-    Raises an exception on failure so callers can handle it uniformly.
+    Retries up to MAX_RETRIES times on rate-limit (429) errors, honouring the
+    retryDelay the API returns. Raises on any other error or exhausted retries.
     """
     if not ai_client:
         raise ValueError("AI client is not initialized. Check LLM_API env var.")
 
-    # Build the Gemini contents list (user/model turns only; system goes separately)
-    contents = []
-    for msg in messages:
-        gemini_role = "model" if msg["role"] == "assistant" else "user"
-        contents.append(
-            genai_types.Content(
-                role=gemini_role,
-                parts=[genai_types.Part(text=msg["content"])],
+    # Build OpenAI-compatible messages list with system prompt prepended
+    api_messages = [{"role": "system", "content": system_prompt}] + messages
+
+    MAX_RETRIES = 3
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            response = ai_client.chat.completions.create(
+                model=LLM_MODEL,
+                messages=api_messages,
+                temperature=0.7,
             )
-        )
+            return response.choices[0].message.content
 
-    config = genai_types.GenerateContentConfig(
-        system_instruction=system_prompt,
-        temperature=0.7,
-    )
+        except Exception as e:
+            err_str = str(e)
+            # Only retry on rate-limit errors
+            if "429" not in err_str and "rate_limit" not in err_str.lower():
+                raise
 
-    response = ai_client.models.generate_content(
-        model=LLM_MODEL,
-        contents=contents,
-        config=config,
-    )
+            if attempt == MAX_RETRIES:
+                logger.error(f"Rate limit hit on all {MAX_RETRIES} attempts. Giving up.")
+                raise
 
-    return response.text
+            # Parse retryDelay from the error message if available
+            delay = 15  # safe default
+            match = re.search(r"try again in (\d+(?:\.\d+)?)s", err_str, re.IGNORECASE)
+            if match:
+                delay = float(match.group(1)) + 1  # +1s buffer
+            logger.warning(f"Rate limit hit (attempt {attempt}/{MAX_RETRIES}). Retrying in {delay:.0f}s...")
+            time.sleep(delay)
 
 
 # ── Greeting helper ────────────────────────────────────────────────────────────
