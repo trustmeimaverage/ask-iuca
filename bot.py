@@ -393,7 +393,7 @@ async def generate_and_send_greeting(bot: Bot, chat_id: int, user_id: int):
             reply_text = t("greeting_fallback", lang)
 
     await bot.send_message(chat_id=chat_id, text=reply_text)
-    state["history"] = [{"role": "assistant", "content": reply_text}]
+    state["history"] = []
 
 
 # ── Router ─────────────────────────────────────────────────────────────────────
