@@ -3,7 +3,8 @@ import re
 import asyncio
 import logging
 from datetime import datetime
-import cohere
+from google import genai
+from google.genai import types as genai_types
 from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher, Router, F
@@ -20,7 +21,8 @@ load_dotenv()
 
 # Read Environment Variables
 TOKEN = os.getenv("TOKEN")
-LLM_API= os.getenv("LLM_API")
+LLM_API = os.getenv("LLM_API")
+LLM_MODEL = os.getenv("LLM_MODEL", "gemini-2.0-flash")
 ADMIN_IDS_STR = os.getenv("ADMIN_IDS", "")
 
 # Parse Admin IDs
@@ -32,12 +34,13 @@ if ADMIN_IDS_STR:
             ADMIN_IDS.add(int(admin))
 
 # Initialize AI Client
-co = None
+ai_client = None
 if LLM_API:
     try:
-        co = cohere.ClientV2(api_key=LLM_API)
+        ai_client = genai.Client(api_key=LLM_API)
+        logger.info(f"AI client initialized. Model: {LLM_MODEL}")
     except Exception as e:
-        logger.error(f"Failed to initialize AI ClientV2: {e}")
+        logger.error(f"Failed to initialize AI client: {e}")
 else:
     logger.warning("LLM_API is not set in environment.")
 
@@ -178,9 +181,9 @@ UI = {
         "en": "Hello! I am Ask IUCA, a special assistant made just for IUCA. How can I help you today?",
     },
     "error_reply": {
-        "ru": "Извините, у меня возникли трудности с подключением. Пожалуйста, попробуйте позже.",
-        "ky": "Кечиресиз, мага туташууда кыйынчылыктар жаралды. Кийинчерээк кайталап көрүңүз.",
-        "en": "Sorry, I am having trouble connecting to my brain. Please try again later.",
+        "ru": "Извините, у меня возникли трудности с ответом. Пожалуйста, попробуйте позже.",
+        "ky": "Кечиресиз, жооп берүүдө кыйынчылыктар жаралды. Кийинчерээк кайталап көрүңүз.",
+        "en": "Sorry, I am having trouble generating a response. Please try again later.",
     },
     "feedback_prompt": {
         "ru": "Полезен ли этот диалог на данный момент?",
@@ -221,10 +224,6 @@ def t(key: str, lang: str, fallback_lang: str = "en") -> str:
 
 
 # ── Language and Role specific system prompts (6 variants) ────────────────────
-# Each instruction ends with an emphatic language-lock rule (Fix 2 — part A).
-# The rule is placed last so it sits closest to the model's output, maximising
-# recency bias and making it harder for the model to drift.
-
 LANG_ROLE_INSTRUCTIONS = {
     ("ru", "student"): (
         "You must respond EXCLUSIVELY in Russian. "
@@ -276,7 +275,7 @@ LANG_ROLE_INSTRUCTIONS = {
     ),
 }
 
-# ── Fix 2 (part B): Arabic script detector ────────────────────────────────────
+# ── Arabic script detector ─────────────────────────────────────────────────────
 # Unicode range U+0600–U+06FF covers the core Arabic block.
 # U+0750–U+077F is Arabic Supplement; U+FB50–U+FDFF is Arabic Presentation Forms-A.
 _ARABIC_RE = re.compile(r"[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF]")
@@ -308,6 +307,42 @@ def build_system_prompt(lang: str, role: str) -> str:
     instruction = LANG_ROLE_INSTRUCTIONS.get((lang, role), "")
     # Order: base rules → knowledge → language-lock instruction (last = highest recency)
     return f"{PROMPT_BASE}\n\n{KNOWLEDGE_BASE}\n\n{instruction}"
+
+
+# ── AI call helper ─────────────────────────────────────────────────────────────
+
+def call_ai(system_prompt: str, messages: list[dict]) -> str:
+    """
+    Send a chat request to the configured AI model and return the reply text.
+    `messages` is a list of {"role": "user"|"assistant", "content": "..."} dicts.
+    Raises an exception on failure so callers can handle it uniformly.
+    """
+    if not ai_client:
+        raise ValueError("AI client is not initialized. Check LLM_API env var.")
+
+    # Build the Gemini contents list (user/model turns only; system goes separately)
+    contents = []
+    for msg in messages:
+        gemini_role = "model" if msg["role"] == "assistant" else "user"
+        contents.append(
+            genai_types.Content(
+                role=gemini_role,
+                parts=[genai_types.Part(text=msg["content"])],
+            )
+        )
+
+    config = genai_types.GenerateContentConfig(
+        system_instruction=system_prompt,
+        temperature=0.7,
+    )
+
+    response = ai_client.models.generate_content(
+        model=LLM_MODEL,
+        contents=contents,
+        config=config,
+    )
+
+    return response.text
 
 
 # ── Greeting helper ────────────────────────────────────────────────────────────
@@ -358,28 +393,14 @@ async def generate_and_send_greeting(bot: Bot, chat_id: int, user_id: int):
 
     async with ChatActionSender.typing(bot=bot, chat_id=chat_id):
         try:
-            if not co:
-                raise ValueError("AI API client is not initialized")
-
             loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(
+            reply_text = await loop.run_in_executor(
                 None,
-                lambda: co.chat(
-                    model="command-a-03-2025",
-                    messages=[
-                        {"role": "system", "content": sys_prompt},
-                        {"role": "user",   "content": greeting_prompt},
-                    ]
+                lambda: call_ai(
+                    sys_prompt,
+                    [{"role": "user", "content": greeting_prompt}],
                 )
             )
-
-            content = response.message.content
-            if isinstance(content, list):
-                reply_text = content[0].text
-            elif isinstance(content, str):
-                reply_text = content
-            else:
-                reply_text = str(content)
 
             reply_text = reply_text.replace("*", "").replace("\u2014", "").strip()
 
@@ -654,40 +675,23 @@ async def handle_conversation(message: Message):
         history = history[-12:]
     state["history"] = history
 
-    sys_prompt   = build_system_prompt(lang, role)
-    api_messages = [{"role": "system", "content": sys_prompt}]
-    for msg in history:
-        api_messages.append({"role": msg["role"], "content": msg["content"]})
+    sys_prompt = build_system_prompt(lang, role)
 
     async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
         try:
-            if not co:
-                raise ValueError("AI API client is not initialized")
-
-            loop     = asyncio.get_event_loop()
-            response = await loop.run_in_executor(
+            loop = asyncio.get_event_loop()
+            reply_text = await loop.run_in_executor(
                 None,
-                lambda: co.chat(
-                    model="command-a-03-2025",
-                    messages=api_messages,
-                )
+                lambda: call_ai(sys_prompt, history),
             )
 
-            content = response.message.content
-            if isinstance(content, list):
-                reply_text = content[0].text
-            elif isinstance(content, str):
-                reply_text = content
-            else:
-                reply_text = str(content)
-
         except Exception as e:
-            logger.error(f"Error calling AI API: {e}")
+            logger.error(f"Error calling AI: {e}")
             reply_text = t("error_reply", lang)
 
     reply_text = reply_text.replace("*", "").replace("\u2014", "").strip()
 
-    # Arabic-script guard (Fix 2 — part B)
+    # Arabic-script guard
     if contains_arabic(reply_text):
         logger.warning(f"Arabic script detected in reply for user {user_id} (lang={lang}). Sending fallback.")
         reply_text = t("wrong_lang_fallback", lang)
