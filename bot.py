@@ -545,11 +545,16 @@ async def handle_lang_callback(callback: CallbackQuery):
 
     USER_STATES[user_id]["language"] = lang
 
-    # Role prompt and buttons are now in the chosen language
-    await callback.message.edit_text(
-        text=t("role_prompt", lang),
-        reply_markup=build_role_keyboard(lang),
-    )
+    if USER_STATES[user_id].get("is_onboarding", True):
+        # During onboarding, proceed to role selection
+        await callback.message.edit_text(
+            text=t("role_prompt", lang),
+            reply_markup=build_role_keyboard(lang),
+        )
+    else:
+        # Language changed mid-session via /settings — skip role, just dismiss
+        await callback.message.delete()
+
     await callback.answer()
 
 
