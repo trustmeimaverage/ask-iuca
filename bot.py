@@ -20,7 +20,7 @@ load_dotenv()
 
 # Read Environment Variables
 TOKEN = os.getenv("TOKEN")
-COHERE_API = os.getenv("COHERE_API")
+LLM_API= os.getenv("LLM_API")
 ADMIN_IDS_STR = os.getenv("ADMIN_IDS", "")
 
 # Parse Admin IDs
@@ -33,13 +33,13 @@ if ADMIN_IDS_STR:
 
 # Initialize Cohere Client
 co = None
-if COHERE_API:
+if LLM_API:
     try:
-        co = cohere.ClientV2(api_key=COHERE_API)
+        co = cohere.ClientV2(api_key=LLM_API)
     except Exception as e:
         logger.error(f"Failed to initialize Cohere ClientV2: {e}")
 else:
-    logger.warning("COHERE_API is not set in environment.")
+    logger.warning("LLM_API is not set in environment.")
 
 # In-Memory State Storage
 USER_STATES = {}
@@ -93,32 +93,6 @@ UI = {
         "ru": "Пожалуйста, отправьте команду /start для настройки.",
         "ky": "Сураныч, жөндөө үчүн /start буйругун жөнөтүңүз.",
         "en": "Please send the /start command to set up the bot.",
-    },
-    "help": {
-        "ru": (
-            "🤖 Доступные команды:\n\n"
-            "/start — Полный сброс настроек и перезапуск\n"
-            "/help — Список доступных команд\n"
-            "/about — О боте и контакты МУЦА\n"
-            "/settings — Текущие настройки с кнопками изменения\n"
-            "/reset — Очистить историю диалога (язык и роль сохранятся)"
-        ),
-        "ky": (
-            "🤖 Жеткиликтүү буйруктар:\n\n"
-            "/start — Толук тазалоо жана баштапкы жөндөөлөрдү баштоо\n"
-            "/help — Буйруктардын тизмесин көрсөтүү\n"
-            "/about — Бот жөнүндө маалымат жана БАЭУ байланыштары\n"
-            "/settings — Учурдагы жөндөөлөрдү көрсөтүү жана өзгөртүү\n"
-            "/reset — Сүйлөшүү тарыхын тазалоо (тил жана роль сакталат)"
-        ),
-        "en": (
-            "🤖 Available commands:\n\n"
-            "/start — Full reset of history & settings, restart onboarding\n"
-            "/help — Show this list of commands\n"
-            "/about — Bot description + IUCA contact info\n"
-            "/settings — Show current language & role with change buttons\n"
-            "/reset — Clear conversation history only — keep language & role"
-        ),
     },
     "about": {
         "ru": (
@@ -346,10 +320,41 @@ async def generate_and_send_greeting(bot: Bot, chat_id: int, user_id: int):
     sys_prompt = build_system_prompt(lang, role)
 
     greeting_prompt = {
-        "en": "Hello! Introduce yourself to me in the language and tone specified in your instructions. Keep it very short.",
-        "ru": "Привет! Представься мне на русском языке в соответствии со своими инструкциями по тону общения. Отвечай очень кратко.",
-        "ky": "Салам! Багыттооңорго ылайык кыргыз тилинде мага өзүңдү тааныштыр. Кыска жооп бер.",
-    }.get(lang, "Hello! Please greet me.")
+        "en": (
+            "Write a greeting. Strict rules:\n"
+            "1. Sentence 1: 'I'm Ask IUCA, your assistant for everything about the university.' "
+            "Do not add metaphors, nicknames, or extra descriptions.\n"
+            "2. Sentence 2: Ask what they want to know. "
+            "Use natural phrasing like 'What would you like to know?' or 'What questions do you have?'\n"
+            "3. No 'Welcome!', no filler phrases, no exclamation marks.\n"
+            "4. Exactly two sentences. Nothing more."
+        ),
+        "ru": (
+            "Напиши приветствие от имени Ask IUCA. Строгие правила:\n"
+            "1. Первое предложение должно быть именно таким по смыслу: "
+            "'Я Ask IUCA, ваш помощник по всем вопросам об университете.' "
+            "Имя всегда пишется как 'Ask IUCA', без перевода и без изменений. "
+            "Никаких метафор, прозвищ или лишних описаний.\n"
+            "2. Второе предложение: задай вопрос о том, что пользователь хочет узнать. "
+            "Используй естественную для русского языка формулировку, например: "
+            "'Что вас интересует?' или 'Чем могу помочь?' или 'Что хотите узнать?' "
+            "Не используй слово 'вопрос' в конце и не перечисляй темы.\n"
+            "3. Никаких вводных слов, восклицаний, тире и длинных тире (—).\n"
+            "4. Ровно два предложения. Не больше."
+        ),
+        "ky": (
+            "Ask IUCA атынан учкул саламдашуу жаз. Катуу эрежелер:\n"
+            "1. Биринчи сүйлөм мындай мааниде болсун: "
+            "'Мен Ask IUCA, университет жөнүндө бардык суроолор боюнча жардамчыңмын.' "
+            "Ат дайыма 'Ask IUCA' деп жазылат, которулбайт жана өзгөртүлбөйт. "
+            "Эч кандай метафоралар же кошумча сүрөттөмөлөр болбосун.\n"
+            "2. Экинчи сүйлөм: колдонуучу эмнени билгиси келерин сура. "
+            "Кыргыз тилине жаraшымдуу жөнөкөй формулировка колдон, мисалы: "
+            "'Эмнени билгиңиз келет?' же 'Кандай суроолоруңуз бар?'\n"
+            "3. Эч кандай кириш сөздөр, илептүү белгилер же сызыкчалар болбосун.\n"
+            "4. Так эки сүйлөм. Андан ашык эмес."
+        ),
+    }.get(lang, "Write exactly two sentences: first introduce yourself as Ask IUCA and your role, then ask what they want to know about IUCA. No filler, no metaphors.")
 
     async with ChatActionSender.typing(bot=bot, chat_id=chat_id):
         try:
@@ -376,7 +381,7 @@ async def generate_and_send_greeting(bot: Bot, chat_id: int, user_id: int):
             else:
                 reply_text = str(content)
 
-            reply_text = reply_text.replace("*", "").strip()
+            reply_text = reply_text.replace("*", "").replace("\u2014", "").strip()
 
             # Arabic-script guard
             if contains_arabic(reply_text):
@@ -408,15 +413,6 @@ async def cmd_start(message: Message):
         "is_onboarding": True,
     }
     await message.answer(text=UI["lang_prompt"], reply_markup=lang_keyboard)
-
-
-@router.message(Command("help"))
-async def cmd_help(message: Message):
-    user_id = message.from_user.id
-    state = USER_STATES.get(user_id)
-    lang = state["language"] if state else None
-    await message.answer(t("help", lang or "en"))
-
 
 @router.message(Command("about"))
 async def cmd_about(message: Message):
@@ -689,7 +685,7 @@ async def handle_conversation(message: Message):
             logger.error(f"Error calling Cohere API: {e}")
             reply_text = t("error_reply", lang)
 
-    reply_text = reply_text.replace("*", "").strip()
+    reply_text = reply_text.replace("*", "").replace("\u2014", "").strip()
 
     # Arabic-script guard (Fix 2 — part B)
     if contains_arabic(reply_text):
