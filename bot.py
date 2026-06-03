@@ -31,13 +31,13 @@ if ADMIN_IDS_STR:
         if admin.isdigit():
             ADMIN_IDS.add(int(admin))
 
-# Initialize Cohere Client
+# Initialize AI Client
 co = None
 if LLM_API:
     try:
         co = cohere.ClientV2(api_key=LLM_API)
     except Exception as e:
-        logger.error(f"Failed to initialize Cohere ClientV2: {e}")
+        logger.error(f"Failed to initialize AI ClientV2: {e}")
 else:
     logger.warning("LLM_API is not set in environment.")
 
@@ -359,7 +359,7 @@ async def generate_and_send_greeting(bot: Bot, chat_id: int, user_id: int):
     async with ChatActionSender.typing(bot=bot, chat_id=chat_id):
         try:
             if not co:
-                raise ValueError("Cohere API client is not initialized")
+                raise ValueError("AI API client is not initialized")
 
             loop = asyncio.get_event_loop()
             response = await loop.run_in_executor(
@@ -389,7 +389,7 @@ async def generate_and_send_greeting(bot: Bot, chat_id: int, user_id: int):
                 reply_text = t("greeting_fallback", lang)
 
         except Exception as e:
-            logger.error(f"Error calling Cohere for greeting: {e}")
+            logger.error(f"Error calling AI for greeting: {e}")
             reply_text = t("greeting_fallback", lang)
 
     await bot.send_message(chat_id=chat_id, text=reply_text)
@@ -662,7 +662,7 @@ async def handle_conversation(message: Message):
     async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
         try:
             if not co:
-                raise ValueError("Cohere API client is not initialized")
+                raise ValueError("AI API client is not initialized")
 
             loop     = asyncio.get_event_loop()
             response = await loop.run_in_executor(
@@ -682,7 +682,7 @@ async def handle_conversation(message: Message):
                 reply_text = str(content)
 
         except Exception as e:
-            logger.error(f"Error calling Cohere API: {e}")
+            logger.error(f"Error calling AI API: {e}")
             reply_text = t("error_reply", lang)
 
     reply_text = reply_text.replace("*", "").replace("\u2014", "").strip()
